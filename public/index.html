@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ChatGPT Clone Advanced</title>
+  <style>
+    :root { color-scheme: dark light; }
+    body { font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; background: #0b0b0c; color: #eaeaea; }
+    header { padding: 14px 16px; border-bottom: 1px solid #1e1e22; background: #0f0f12; }
+    header h1 { margin: 0; font-size: 1.4rem; }
+    .container { max-width: 860px; margin: 0 auto; padding: 16px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+    .controls label { display: flex; flex-direction: column; font-size: 0.85rem; }
+    .controls input, .controls textarea, .controls select { padding: 8px 10px; border-radius: 8px; border: 1px solid #2a2a31; background: #14151a; color: #eaeaea; font-size: 0.9rem; }
+    .controls textarea { resize: vertical; min-height: 48px; }
+    .chat { border: 1px solid #23242a; border-radius: 8px; padding: 12px; min-height: 240px; max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+    .message { max-width: 80%; padding: 12px 14px; border-radius: 14px; line-height: 1.45; white-space: pre-wrap; }
+    .message.user { align-self: flex-end; background: #2a2f3a; }
+    .message.assistant { align-self: flex-start; background: #16171b; border: 1px solid #23242a; }
+    .message.assistant.temp { opacity: 0.8; font-style: italic; }
+    form { display: flex; gap: 8px; }
+    input[type="text"] { flex: 1; padding: 12px 14px; border-radius: 12px; border: 1px solid #2a2a31; background: #14151a; color: #eaeaea; }
+    button { padding: 12px 16px; border-radius: 12px; border: 0; background: #3a82ff; color: #fff; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <header><h1>ChatGPT Clone Advanced</h1></header>
+  <div class="container">
+    <div class="controls">
+      <label>Model
+        <select id="modelSelect">
+          <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+          <option value="gpt-5">gpt-5</option>
+        </select>
+      </label>
+      <label>Temperature
+        <input type="range" id="tempRange" min="0" max="1" step="0.1" value="0.7" />
+      </label>
+      <label style="flex:1;">System Prompt
+        <textarea id="systemPrompt" rows="2">You are a helpful coding assistant.</textarea>
+      </label>
+      <label style="display:flex; align-items:center;">Streaming
+        <input type="checkbox" id="streamToggle" style="margin-top:4px;" />
+      </label>
+    </div>
+    <div id="chat" class="chat"></div>
+    <form id="chatForm">
+      <input id="chatInput" type="text" placeholder="Ask anything..." autocomplete="off" />
+      <button id="sendBtn" type="submit">Send</button>
+    </form>
+  </div>
+
+  <script>
+    const chat = document.getElementById("chat");
+    const form = document.getElementById("chatForm");
+    const input = document.getElementById("chatInput");
+    const modelSelect = document.getElementById("modelSelect");
+    const tempRange = document.getElementById("tempRange");
+    const systemPrompt = document.getElementById("systemPrompt");
+    const streamToggle = document.getElementById("streamToggle");
+    let messages = [];
+
+    function addBubble(role, text) {
+      const div = document.createElement("div");
+      div.className = `message ${role}`;
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      const sysPrompt = systemPrompt.value.trim() || "You are a helpful coding assistant.";
+      if (messages.length === 0) {
+        messages.push({ role: "system", content: sysPrompt });
+      }
+      messages.push({ role: "user", content: text });
+      addBubble("user", text);
+      const model = modelSelect.value;
+      const temperature = parseFloat(tempRange.value);
+      const streaming = streamToggle.checked;
+      document.getElementById("sendBtn").disabled = true;
+      if (streaming) {
+        try {
+          const response = await fetch("/api/chat/stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages, model, temperature, system: sysPrompt })
+          });
+          if (!response.ok) {
+            const errText = await response.text();
+            addBubble("assistant", "Error: " + errText);
+            document.getElementById("sendBtn").disabled = false;
+            return;
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let assistantContent = "";
+          let tempDiv = null;
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            const parts = chunk.split("\n\n");
+            for (const part of parts) {
+              if (!part.trim()) continue;
+              const dataStr = part.replace(/^data:\s*/, "");
+              if (dataStr === "[DONE]") {
+                messages.push({ role: "assistant", content: assistantContent });
+                if (tempDiv) {
+                  tempDiv.classList.remove("temp");
+                } else {
+                  addBubble("assistant", assistantContent);
+                }
+                assistantContent = "";
+                break;
+              }
+              try {
+                const payload = JSON.parse(dataStr);
+                const delta = payload.choices?.[0]?.delta?.content;
+                if (delta) {
+                  assistantContent += delta;
+                  if (!tempDiv) {
+                    tempDiv = addBubble("assistant temp", "");
+                  }
+                  tempDiv.textContent = assistantContent;
+                }
+              } catch (err) {
+                console.error(err);
+              }
+            }
+          }
+        } catch (err) {
+          addBubble("assistant", "Request failed: " + err.message);
+        }
+      } else {
+        try {
+          const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages, model, temperature, system: sysPrompt })
+          });
+          const data = await res.json();
+          if (data?.reply) {
+            messages.push({ role: "assistant", content: data.reply });
+            addBubble("assistant", data.reply);
+          } else {
+            addBubble("assistant", "Error: " + (data?.error || "No reply"));
+          }
+        } catch (err) {
+          addBubble("assistant", "Request failed: " + err.message);
+        }
+      }
+      document.getElementById("sendBtn").disabled = false;
+    });
+  </script>
+</body>
+</html>
